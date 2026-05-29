@@ -11,19 +11,19 @@ namespace Diff_tool.Controllers
     {
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly IConfiguration _config;
-        private readonly ChecksheetService _checksheetService;
         private readonly ChecksheetWordService _checksheetWordService;
+        private readonly ILogger<CompareController> _logger;
 
         public CompareController(
             IHttpClientFactory httpClientFactory,
             IConfiguration config,
-            ChecksheetService checksheetService,
-            ChecksheetWordService checksheetWordService)
+            ChecksheetWordService checksheetWordService,
+            ILogger<CompareController> logger)
         {
             _httpClientFactory = httpClientFactory;
             _config = config;
-            _checksheetService = checksheetService;
             _checksheetWordService = checksheetWordService;
+            _logger = logger;
         }
 
         [HttpGet("status/{jobId}")]
@@ -38,43 +38,65 @@ namespace Diff_tool.Controllers
             return Content(content, "application/json");
         }
 
-        // ── Excel: tạm thời vô hiệu hóa ──────────────────────────────────────
-        // [HttpPost("export")]
-        // public IActionResult Export([FromBody] ChecksheetRequest request) { ... }
-
         [HttpPost("export")]
-        public IActionResult Export([FromBody] ChecksheetRequest _)
-        {
-            return StatusCode(503, new { message = "Export Excel đã bị vô hiệu hóa. Vui lòng dùng export-word." });
-        }
-
-        // ── Word export ───────────────────────────────────────────────────────
-        [HttpPost("export-word")]
-        public IActionResult ExportWord([FromBody] ChecksheetRequest request)
+        public IActionResult Export([FromBody] ChecksheetRequest request)
         {
             try
             {
-                foreach (var s in request?.Sections ?? new())
-                    foreach (var c in s.Changes ?? new())
-                    {
-                        Console.WriteLine($"change type={c.Type} kind={c.ChangeKind}");
-                        Console.WriteLine($"  left:  preview={c.Left?.PreviewText}, nodeNull={c.Left?.Node == null}");
-                        Console.WriteLine($"  right: preview={c.Right?.PreviewText}, nodeNull={c.Right?.Node == null}");
-                        Console.WriteLine($"  wordDiff null={c.WordDiff == null}, spans={c.WordDiff?.Spans?.Count ?? -1}");
-                        if (c.WordDiff?.Spans != null)
-                            foreach (var sp in c.WordDiff.Spans)
-                                Console.WriteLine($"    span: type={sp.Type} text={sp.Text} old={sp.OldText} new={sp.NewText}");
-                    }
+                var sections = request?.Sections ?? new();
 
-                var fileBytes = _checksheetWordService.GenerateChecksheet(request?.Sections ?? new());
+                foreach (var s in sections)
+                {
+                    s.Changes = (s.Changes ?? new())
+                        .Where(c =>
+                        {
+                            var kind = c.ChangeKind?.ToLower();
+                            bool keep = kind is "replace" or "insert" or "delete";
+
+                            _logger.LogInformation(
+                                "change type={Type} kind={Kind} => {Action}",
+                                c.Type, c.ChangeKind, keep ? "KEEP" : "SKIP");
+
+                            if (keep)
+                            {
+                                _logger.LogInformation(
+                                    "  left={LeftPreview} page={LeftPage} nodeNull={LeftNull} | right={RightPreview} page={RightPage} nodeNull={RightNull}",
+                                    c.Left?.PreviewText, c.Left?.Page, c.Left?.Node == null,
+                                    c.Right?.PreviewText, c.Right?.Page, c.Right?.Node == null);
+                                _logger.LogInformation(
+                                    "  wordDiff null={WdNull} spans={SpanCount}",
+                                    c.WordDiff == null, c.WordDiff?.Spans?.Count ?? -1);
+
+                                if (c.WordDiff?.Spans != null)
+                                    foreach (var sp in c.WordDiff.Spans)
+                                        _logger.LogInformation(
+                                            "    span type={SpType} text={Text} old={Old} new={New}",
+                                            sp.Type, sp.Text, sp.OldText, sp.NewText);
+                            }
+
+                            return keep;
+                        })
+                        .ToList();
+                }
+
+                var fileBytes = _checksheetWordService.GenerateChecksheet(sections);
                 var fileName = $"Checksheet_{request?.JobId ?? "export"}.docx";
-                return File(fileBytes,
+
+                return File(
+                    fileBytes,
                     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     fileName);
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = ex.Message });
+                _logger.LogError(ex, "Export thất bại");
+                return StatusCode(500, new
+                {
+                    message = ex.Message,
+                    type = ex.GetType().FullName,
+                    stackTrace = ex.StackTrace,
+                    inner = ex.InnerException?.Message
+                });
             }
         }
     }

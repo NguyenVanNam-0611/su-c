@@ -51,7 +51,13 @@ namespace Diff_tool.Controllers
                         .Where(c =>
                         {
                             var kind = c.ChangeKind?.ToLower();
-                            bool keep = kind is "replace" or "insert" or "delete";
+                            var type = c.Type?.ToLower();
+
+                            bool keep =
+                                kind is "replace" or "insert" or "delete"
+                                || type is "table_modified" or "table_inserted" or "table_deleted"
+                                || type is "image_modified" or "image_inserted" or "image_deleted"
+                                || type is "shape_modified" or "shape_inserted" or "shape_deleted";
 
                             _logger.LogInformation(
                                 "change type={Type} kind={Kind} => {Action}",
